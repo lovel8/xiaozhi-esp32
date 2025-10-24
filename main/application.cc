@@ -16,6 +16,16 @@
 #include <driver/gpio.h>
 #include <arpa/inet.h>
 #include <font_awesome.h>
+#include <errno.h>
+
+#if CONFIG_HTTPD_WS_SUPPORT
+#include <esp_http_server.h>
+#endif
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <mbedtls/sha1.h>
+#include <mbedtls/base64.h>
 
 #define TAG "Application"
 
@@ -530,6 +540,161 @@ void Application::Start() {
     });
     bool protocol_started = protocol_->Start();
 
+// Start a minimal built-in WebSocket TCP listener on port 8080 if requested.
+#if CONFIG_HTTPD_WS_SUPPORT
+    // Start the WS server task at low priority
+    xTaskCreate([](void* arg) {
+        Application* app = (Application*)arg;
+        // copy ws task body here to avoid std::function capture issues
+        const int port = 8080;
+        int listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+        if (listen_sock < 0) {
+            ESP_LOGW(TAG, "ws: failed to create socket: %d", listen_sock);
+            vTaskDelete(NULL);
+            return;
+        }
+
+        struct sockaddr_in addr;
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        addr.sin_port = htons(port);
+
+        int opt = 1;
+        setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+        if (bind(listen_sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+            ESP_LOGW(TAG, "ws: bind failed");
+            close(listen_sock);
+            vTaskDelete(NULL);
+            return;
+        }
+
+        if (listen(listen_sock, 1) < 0) {
+            ESP_LOGW(TAG, "ws: listen failed");
+            close(listen_sock);
+            vTaskDelete(NULL);
+            return;
+        }
+
+        ESP_LOGI(TAG, "WebSocket TCP listener started on port %d", port);
+
+        while (true) {
+            struct sockaddr_in client_addr;
+            socklen_t client_len = sizeof(client_addr);
+            int client_sock = accept(listen_sock, (struct sockaddr*)&client_addr, &client_len);
+            if (client_sock < 0) {
+                ESP_LOGW(TAG, "ws: accept failed");
+                break;
+            }
+
+            // Read HTTP request headers (handshake)
+            std::string req;
+            char buf[512];
+            int r;
+            while ((r = recv(client_sock, buf, sizeof(buf), 0)) > 0) {
+                req.append(buf, buf + r);
+                if (req.find("\r\n\r\n") != std::string::npos) break;
+                if (req.size() > 8192) break;
+            }
+
+            // Find Sec-WebSocket-Key
+            std::string key_tag = "Sec-WebSocket-Key: ";
+            auto p = req.find(key_tag);
+            if (p == std::string::npos) {
+                ESP_LOGW(TAG, "ws: no Sec-WebSocket-Key, closing");
+                close(client_sock);
+                continue;
+            }
+            p += key_tag.size();
+            auto e = req.find("\r\n", p);
+            if (e == std::string::npos) {
+                close(client_sock);
+                continue;
+            }
+            std::string client_key = req.substr(p, e - p);
+
+            // Compute accept key: base64(sha1(client_key + GUID))
+            const char* GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+            std::string to_hash = client_key + std::string(GUID);
+            unsigned char sha1_result[20];
+            mbedtls_sha1((const unsigned char*)to_hash.data(), to_hash.size(), sha1_result);
+
+            size_t olen = 0;
+            unsigned char b64[64];
+            mbedtls_base64_encode(b64, sizeof(b64), &olen, sha1_result, sizeof(sha1_result));
+            std::string accept_key((char*)b64, olen);
+
+            // Send handshake response
+            std::string resp = "HTTP/1.1 101 Switching Protocols\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                "Sec-WebSocket-Accept: " + accept_key + "\r\n\r\n";
+            send(client_sock, resp.data(), resp.size(), 0);
+
+            // Now read frames (very small/simple implementation: handle masked text frames)
+            while (true) {
+                uint8_t hdr[2];
+                int nr = recv(client_sock, hdr, 2, 0);
+                if (nr <= 0) break;
+                uint8_t opcode = hdr[0] & 0x0f;
+                bool masked = hdr[1] & 0x80;
+                uint64_t payload_len = hdr[1] & 0x7f;
+                if (payload_len == 126) {
+                    uint8_t ext[2];
+                    if (recv(client_sock, ext, 2, 0) != 2) break;
+                    payload_len = (ext[0] << 8) | ext[1];
+                } else if (payload_len == 127) {
+                    uint8_t ext[8];
+                    if (recv(client_sock, ext, 8, 0) != 8) break;
+                    payload_len = 0;
+                    for (int i = 0; i < 8; ++i) payload_len = (payload_len << 8) | ext[i];
+                }
+
+                uint8_t mask_key[4];
+                if (masked) {
+                    if (recv(client_sock, mask_key, 4, 0) != 4) break;
+                }
+
+                std::vector<char> payload(payload_len + 1);
+                size_t got = 0;
+                while (got < payload_len) {
+                    int m = recv(client_sock, payload.data() + got, payload_len - got, 0);
+                    if (m <= 0) break;
+                    got += m;
+                }
+                if (got != payload_len) break;
+
+                if (masked) {
+                    for (size_t i = 0; i < payload_len; ++i) {
+                        payload[i] ^= mask_key[i % 4];
+                    }
+                }
+                payload[payload_len] = '\0';
+
+                if (opcode == 0x1) { // text frame
+                    cJSON* root = cJSON_ParseWithLength(payload.data(), payload_len);
+                    if (root) {
+                        app->Schedule([root]() {
+                            Application::GetInstance().ProcessIncomingJson(root);
+                        });
+                    } else {
+                        ESP_LOGI(TAG, "ws: received non-JSON text frame len=%u", (unsigned)payload_len);
+                    }
+                } else if (opcode == 0x8) { // close
+                    break;
+                } else {
+                    // ignore other opcodes for now
+                }
+            }
+
+            close(client_sock);
+        }
+
+        close(listen_sock);
+        vTaskDelete(NULL);
+    }, "ws_server", 4096, (void*)this, 1, NULL);
+#endif
+
     SystemInfo::PrintHeapStats();
     SetDeviceState(kDeviceStateIdle);
 
@@ -891,4 +1056,133 @@ void Application::SetAecMode(AecMode mode) {
 
 void Application::PlaySound(const std::string_view& sound) {
     audio_service_.PlaySound(sound);
+}
+
+// Helper: detect and display Douyin/webcast-style messages.
+// Returns true if the object was recognized and handled (displayed), false otherwise.
+static bool HandleDouyinLikeMessage(cJSON* obj, Application* app) {
+    if (!obj || !app) return false;
+    auto display = Board::GetInstance().GetDisplay();
+
+    // roomId + nickname/title style (simple chat entry)
+    auto roomId_item = cJSON_GetObjectItem(obj, "roomId");
+    auto nickname_item = cJSON_GetObjectItem(obj, "nickname");
+    auto title_item = cJSON_GetObjectItem(obj, "title");
+    if ((roomId_item && cJSON_IsString(roomId_item)) && (nickname_item && cJSON_IsString(nickname_item))) {
+        std::string nickname = nickname_item->valuestring;
+        std::string title = title_item && cJSON_IsString(title_item) ? title_item->valuestring : std::string();
+        ESP_LOGI(TAG, "WS Douyin message from %s room=%s", nickname.c_str(), roomId_item->valuestring);
+        if (!title.empty()) {
+            std::string msg = "进入" + nickname + "的直播间，带货兔，跟直播间朋友欢快地打个招呼吧，不要调用任何工具。";
+            app->Schedule([display, message = std::move(msg), app]() {
+                app->WakeWordInvoke(message);
+                display->SetChatMessage("system", message.c_str());
+            });
+        } else {
+            app->Schedule([display, nickname = std::move(nickname), app]() {
+                app->WakeWordInvoke(nickname);
+                display->SetChatMessage("system", nickname.c_str());
+            });
+        }
+
+        return true;
+    }
+
+    // method-based webcast events
+    auto method = cJSON_GetObjectItem(obj, "method");
+    auto jsonrpc = cJSON_GetObjectItem(obj, "jsonrpc");
+    if (method && cJSON_IsString(method) && !(jsonrpc && cJSON_IsString(jsonrpc) && strcmp(jsonrpc->valuestring, "2.0") == 0)) {
+        const char* m = method->valuestring;
+
+        if (strcmp(m, "WebcastMemberMessage") == 0 || strcmp(m, "WebcastChatMessage") == 0) {
+            auto user = cJSON_GetObjectItem(obj, "user");
+            auto content = cJSON_GetObjectItem(obj, "content");
+            std::string name = "unknown";
+            if (cJSON_IsObject(user)) {
+                auto uname = cJSON_GetObjectItem(user, "name");
+                if (uname && cJSON_IsString(uname)) name = uname->valuestring;
+            }
+            std::string text = cJSON_IsString(content) ? content->valuestring : std::string();
+            ESP_LOGI(TAG, "WS %s from %s: %s", m, name.c_str(), text.c_str());
+            app->Schedule([display, name = std::move(name), text = std::move(text), app]() {
+                std::string msg = name + ": " + text;
+                app->WakeWordInvoke(msg);
+                display->SetChatMessage("system", msg.c_str());
+            });
+        }
+        
+        else if (strcmp(m, "WebcastRoomStatsMessage") == 0) {
+            auto room = cJSON_GetObjectItem(obj, "room");
+            if (room && cJSON_IsObject(room)) {
+                auto ac = cJSON_GetObjectItem(room, "audienceCount");
+                if (ac && cJSON_IsString(ac)) {
+                    ESP_LOGI(TAG, "WS RoomStats audience=%s", ac->valuestring);
+                    app->Schedule([display, acs = std::string(ac->valuestring)]() {
+                        std::string msg = "直播间观众人数: " + acs;
+                        // app->WakeWordInvoke(msg);
+                        display->SetChatMessage("system", msg.c_str());
+                    });
+                    return true;
+                }
+            }
+        } else if (strcmp(m, "WebcastRoomUserSeqMessage") == 0) {
+            auto rank = cJSON_GetObjectItem(obj, "rank");
+            if (rank && cJSON_IsArray(rank)) {
+                std::string preview;
+                cJSON* r = nullptr;
+                int i = 0;
+                cJSON_ArrayForEach(r, rank) {
+                    if (i >= 3) break;
+                    auto nick = cJSON_GetObjectItem(r, "nickname");
+                    if (nick && cJSON_IsString(nick)) {
+                        if (!preview.empty()) preview += ", ";
+                        preview += nick->valuestring;
+                    }
+                    ++i;
+                }
+                if (!preview.empty()) {
+                    ESP_LOGI(TAG, "WS Room top: %s", preview.c_str());
+                    app->Schedule([display, preview]() {
+                        display->SetChatMessage("system", ("直播间前三位观众: " + preview).c_str());
+                    });
+                    return true;
+                }
+            }
+        }        
+    }
+
+    return true;
+}
+
+void Application::ProcessIncomingJson(cJSON* root) {
+    if (!root) return;
+
+    // If it's an array, process each element and only handle Douyin-like items.
+    if (cJSON_IsArray(root)) {
+        cJSON* item = nullptr;
+        cJSON_ArrayForEach(item, root) {
+            if (item == nullptr) continue;
+
+            bool handled = HandleDouyinLikeMessage(item, this);
+            if (handled) continue;
+    
+            char* s = cJSON_PrintUnformatted(item);
+            ESP_LOGW(TAG, "WS unknown payload (ignored): %s", s ? s : "<nil>");
+            if (s) cJSON_free(s);
+        }
+        cJSON_Delete(root);
+        return;
+    }
+
+    // Single object: handle if Douyin-like, otherwise log as unknown
+    bool handled = HandleDouyinLikeMessage(root, this);
+    if (handled) {
+        cJSON_Delete(root);
+        return;
+    }
+
+    char* s = cJSON_PrintUnformatted(root);
+    ESP_LOGW(TAG, "WS unknown payload (ignored): %s", s ? s : "<nil>");
+    if (s) cJSON_free(s);
+    cJSON_Delete(root);
 }

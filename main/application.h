@@ -16,6 +16,9 @@
 #include "audio_service.h"
 #include "device_state_event.h"
 
+// forward-declare cJSON to avoid including cJSON in the header
+struct cJSON;
+
 
 #define MAIN_EVENT_SCHEDULE (1 << 0)
 #define MAIN_EVENT_SEND_AUDIO (1 << 1)
@@ -62,6 +65,9 @@ public:
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
+    // Process a parsed JSON object received from external sources (e.g. WebSocket)
+    // Ownership: caller transfers ownership of `root` to this function (it will be freed).
+    void ProcessIncomingJson(cJSON* root);
     AudioService& GetAudioService() { return audio_service_; }
 
 private:
@@ -90,6 +96,8 @@ private:
     void CheckAssetsVersion();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
+    // Internal handler for parsed JSON objects. Caller must not free `root`.
+    void HandleIncomingJson(const cJSON* root);
 };
 
 
