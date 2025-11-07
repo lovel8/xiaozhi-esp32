@@ -69,7 +69,7 @@ public:
     // Ownership: caller transfers ownership of `root` to this function (it will be freed).
     void ProcessIncomingJson(cJSON* root);
     AudioService& GetAudioService() { return audio_service_; }
-
+        
 private:
     Application();
     ~Application();

@@ -10,6 +10,9 @@
 #include "assets.h"
 #include "settings.h"
 
+#include "ble/ble_manager.h"
+#include "ble/application_ble_callbacks.h"
+
 #include <cstring>
 #include <esp_log.h>
 #include <cJSON.h>
@@ -364,6 +367,39 @@ void Application::Start() {
 
     // Print board name/version info
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
+
+    // 使用封装的BLE管理器初始化BLE
+    auto& bleManager = BleManager::GetInstance();
+    bleManager.Initialize("xiaozhi");
+ 
+    // 创建服务和特征
+    bleManager.CreateService("19B10000-E8F2-537E-4F6C-D104768A1214");
+    bleManager.CreateCharacteristic("19B10001-E8F2-537E-4F6C-D104768A1214",
+                                  NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
+    bleManager.SetCharacteristicValue("19B10001-E8F2-537E-4F6C-D104768A1214", "Hello BLE");
+
+    // 设置数据传输回调
+    bleManager.SetDataTransferCallback([this](const std::string& characteristicUuid, bool success, const std::string& data) {
+        if (success) {
+            ESP_LOGI(TAG, "Data transfer successful for characteristic: %s", characteristicUuid.c_str());
+        } else {
+            ESP_LOGE(TAG, "Data transfer failed for characteristic: %s", characteristicUuid.c_str());
+            // 可以在这里添加失败处理逻辑
+        }
+    });
+    
+    // 设置连接回调
+    bleManager.SetConnectionCallbacks(std::make_shared<MyBleConnectionCallbacks>(this));
+    // 设置特征回调
+    bleManager.SetCharacteristicCallbacks("19B10001-E8F2-537E-4F6C-D104768A1214", 
+                                         std::make_shared<MyBleCharacteristicCallbacks>(this));
+
+    // 启动服务和广播
+    bleManager.StartService("19B10000-E8F2-537E-4F6C-D104768A1214");
+    bleManager.StartAdvertising();
+
+    ESP_LOGI(TAG, "BLE从设备初始化完成，等待连接...");
+
 
     /* Setup the audio service */
     auto codec = board.GetAudioCodec();

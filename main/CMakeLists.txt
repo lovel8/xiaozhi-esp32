@@ -34,6 +34,8 @@ set(SOURCES "audio/audio_codec.cc"
             "settings.cc"
             "device_state_event.cc"
             "assets.cc"
+            "ble/ble_manager.cc"
+            ble/application_ble_callbacks.cc
             "main.cc"
             )
 
