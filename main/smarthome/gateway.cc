@@ -25,7 +25,7 @@ bool Gateway::addDevice(const std::shared_ptr<Device>& device) {
     // 检查设备是否已存在
     auto it = std::find_if(m_devices.begin(), m_devices.end(), 
         [&device](const std::shared_ptr<Device>& existingDevice) {
-            return existingDevice && existingDevice->getDeviceId() == device->getDeviceId();
+            return existingDevice && existingDevice->getMac() == device->getMac();
         });
     
     if (it != m_devices.end()) {
@@ -39,10 +39,10 @@ bool Gateway::addDevice(const std::shared_ptr<Device>& device) {
 }
 
 // 移除设备
-bool Gateway::removeDevice(const std::string& deviceId) {
+bool Gateway::removeDevice(const std::string& mac) {
     auto it = std::remove_if(m_devices.begin(), m_devices.end(),
-        [&deviceId](const std::shared_ptr<Device>& device) {
-            return device && device->getDeviceId() == deviceId;
+        [&mac](const std::shared_ptr<Device>& device) {
+            return device && device->getMac() == mac;
         });
     
     bool removed = (it != m_devices.end());
@@ -51,10 +51,10 @@ bool Gateway::removeDevice(const std::string& deviceId) {
 }
 
 // 获取设备
-std::shared_ptr<Device> Gateway::getDevice(const std::string& deviceId) {
+std::shared_ptr<Device> Gateway::getDevice(const std::string& mac) {
     auto it = std::find_if(m_devices.begin(), m_devices.end(),
-        [&deviceId](const std::shared_ptr<Device>& device) {
-            return device && device->getDeviceId() == deviceId;
+        [&mac](const std::shared_ptr<Device>& device) {
+            return device && device->getMac() == mac;
         });
     
     if (it != m_devices.end()) {

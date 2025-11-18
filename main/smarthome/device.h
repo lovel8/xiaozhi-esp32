@@ -7,7 +7,7 @@
 class Device {
 private:
     std::string m_mid;       // 设备品类ID
-    std::string m_mac;           // 设备MAC地址
+    std::string m_mac;           // 设备MAC地址,设备唯一标识符
     std::string m_name;           // 设备名称
     std::string m_manufacturer;   // 制造商
     

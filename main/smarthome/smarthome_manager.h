@@ -13,7 +13,6 @@
 class SmarthomeManager {
 private:
     static SmarthomeManager* m_instance;            // 单例实例
-    Mqttclient* m_mqttClient;
     std::mutex m_mutex;                            // 互斥锁，保证线程安全
     std::vector<std::shared_ptr<Gateway>> m_gateways; // 网关列表
 

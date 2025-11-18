@@ -10,7 +10,11 @@
 
 #define TAG "MQTT-Client"
 
+// 初始化静态成员
+Mqttclient* Mqttclient::m_instance = nullptr;
+
 Mqttclient::Mqttclient() {
+    ESP_LOGI(TAG, "Mqttclient instance created");
 
     // Initialize reconnect timer
     esp_timer_create_args_t reconnect_timer_args = {
@@ -39,8 +43,22 @@ Mqttclient::~Mqttclient() {
     mqtt_.reset();
 }
 
-bool Mqttclient::Start(OnMessageCallback callback) {
-    return StartMqttClient(false, callback);
+Mqttclient* Mqttclient::getInstance() {
+    if (m_instance == nullptr) {
+        m_instance = new Mqttclient();
+    }
+    return m_instance;
+}
+
+bool Mqttclient::initialize(OnMessageCallback callback) {
+    return getInstance()->StartMqttClient(false, callback);
+}
+
+void Mqttclient::shutdown() {
+    if (m_instance != nullptr) {
+        delete m_instance;
+        m_instance = nullptr;
+    }
 }
 
 bool Mqttclient::StartMqttClient(bool report_error, OnMessageCallback callback) {
@@ -111,6 +129,3 @@ bool Mqttclient::Publish(const std::string& topic, const std::string& text) {
     }
     return true;
 }
-
-
-

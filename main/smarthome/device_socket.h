@@ -2,6 +2,7 @@
 #define DEVICE_SOCKET_H
 
 #include "device.h"
+#include <cstdint>
 #include <string>
 #include <map>
 
@@ -12,173 +13,55 @@
  * 包括开关控制、功率监控、定时功能等
  */
 class DeviceSocket : public Device {
-private:
-    bool m_isOn;                  // 插座状态：true表示开启，false表示关闭
-    float m_currentPower;         // 当前功率（瓦特）
-    float m_totalEnergy;          // 总用电量（千瓦时）
-    std::string m_timerSetting;   // 定时设置信息
-    bool m_overloadProtection;    // 是否开启过载保护
-    float m_powerThreshold;       // 功率阈值（过载保护触发值）
-    std::string m_lastStatusTime; // 上次状态变化时间
-
 public:
-    /**
-     * @brief 构造函数
-     * 
-     * @param mid 设备品类ID
-     * @param manufacturer 制造商
-     * @param mac 设备MAC地址
-     * @param name 设备名称
-     */
+    // 构造函数
     DeviceSocket(const std::string& mid, const std::string& manufacturer, const std::string& mac, const std::string& name);
+    virtual ~DeviceSocket() override;
     
-    /**
-     * @brief 析构函数
-     */
-    virtual ~DeviceSocket();
-    
-    /**
-     * @brief 获取插座开关状态
-     * 
-     * @return bool true表示开启，false表示关闭
-     */
-    bool isOn() const;
-    
-    /**
-     * @brief 打开插座
-     * 
-     * @return bool 操作是否成功
-     */
+    // 继电器控制方法
     bool turnOn();
-    
-    /**
-     * @brief 关闭插座
-     * 
-     * @return bool 操作是否成功
-     */
     bool turnOff();
-    
-    /**
-     * @brief 切换插座状态
-     * 
-     * @return bool 操作是否成功
-     */
     bool toggleState();
+    bool getRelayState() const; // 获取当前继电器状态
     
-    /**
-     * @brief 获取当前功率
-     * 
-     * @return float 当前功率值（瓦特）
-     */
-    float getCurrentPower() const;
+    // 断电记忆设置
+    bool setPowerOnMemory(uint8_t mode); // mode: 0-上电关, 1-上电开, 255-记忆断电前状态
+    uint8_t getPowerOnMemory() const;
     
-    /**
-     * @brief 获取总用电量
-     * 
-     * @return float 总用电量（千瓦时）
-     */
-    float getTotalEnergy() const;
+    // 童锁功能
+    bool enableChildLock(bool enable);
+    bool isChildLockEnabled() const;
     
-    /**
-     * @brief 设置功率阈值
-     * 
-     * @param threshold 功率阈值（瓦特）
-     * @return bool 操作是否成功
-     */
-    bool setPowerThreshold(float threshold);
+    // 倒计时功能
+    bool setCountdown(uint32_t seconds); // 设置倒计时秒数，0表示关闭
+    void cancelCountdown(); // 取消倒计时
+    uint32_t getCountdownRemaining() const;
     
-    /**
-     * @brief 获取功率阈值
-     * 
-     * @return float 功率阈值（瓦特）
-     */
-    float getPowerThreshold() const;
+    // 设备数据获取
+    float getCurrentPower() const; // 获取当前功率(W)
+    float getVoltage() const; // 获取当前电压(V)
+    float getCurrent() const; // 获取当前电流(A)
+    float getEnergyConsumed() const; // 获取累计用电量(kWh)
+    int getLinkQuality() const; // 获取信号质量
     
-    /**
-     * @brief 启用过载保护
-     * 
-     * @return bool 操作是否成功
-     */
-    bool enableOverloadProtection();
+    // 重写父类的sendCommand方法
+    virtual bool sendCommand(const std::string& command, const std::any& params) override;
     
-    /**
-     * @brief 禁用过载保护
-     * 
-     * @return bool 操作是否成功
-     */
-    bool disableOverloadProtection();
+    // 处理设备上报的数据
+    bool handleReportData(const std::map<std::string, std::any>& reportData);
     
-    /**
-     * @brief 检查是否开启过载保护
-     * 
-     * @return bool true表示开启，false表示关闭
-     */
-    bool isOverloadProtectionEnabled() const;
-    
-    /**
-     * @brief 设置定时功能
-     * 
-     * @param timerSetting 定时设置字符串，格式例如："on:12:00", "off:18:00", "cycle:00:30:01:30"
-     * @return bool 操作是否成功
-     */
-    bool setTimer(const std::string& timerSetting);
-    
-    /**
-     * @brief 获取定时设置
-     * 
-     * @return std::string 定时设置信息
-     */
-    std::string getTimer() const;
-    
-    /**
-     * @brief 取消定时设置
-     * 
-     * @return bool 操作是否成功
-     */
-    bool cancelTimer();
-    
-    /**
-     * @brief 重写发送命令方法
-     * 
-     * @param command 命令名称
-     * @param params 命令参数
-     * @return bool 操作是否成功
-     */
-    virtual bool sendCommand(const std::string& command, const std::string& params) override;
-    
-    /**
-     * @brief 更新设备状态数据
-     * 
-     * @param power 当前功率
-     * @param energy 累计电量
-     * @return bool 操作是否成功
-     */
-    bool updateStatusData(float power, float energy);
-    
-    /**
-     * @brief 获取设备类型描述
-     * 
-     * @return std::string 设备类型描述文本
-     */
-    std::string getDeviceTypeDescription() const;
-
-private:
-    /**
-     * @brief 记录状态变化时间
-     */
-    void recordStatusChangeTime();
-    
-    /**
-     * @brief 检查是否过载
-     * 
-     * @return bool true表示过载，false表示正常
-     */
+    // 设备状态监控
     bool checkOverload();
+    void setPowerThreshold(float threshold);
+    bool enableOverloadProtection(bool enable);
     
-    /**
-     * @brief 处理过载情况
-     */
-    void handleOverload();
+private:
+    
+    // 发送控制命令的辅助方法
+    bool sendZbSendCommand(const std::string& id, const std::string& device, uint8_t endpoint, const std::map<std::string, std::any>& cmd);
+    
+    // 生成事务ID
+    std::string generateTransactionId();
 };
 
 #endif // DEVICE_SOCKET_H

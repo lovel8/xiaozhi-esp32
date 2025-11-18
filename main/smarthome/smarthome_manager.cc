@@ -23,24 +23,27 @@ SmarthomeManager* SmarthomeManager::getInstance() {
 bool SmarthomeManager::initialize() {
     ESP_LOGI(TAG, "Initializing smarthome manager");
 
-    m_mqttClient = new Mqttclient();
-    m_mqttClient->Start(HandleMqttMessage);
+    // 使用Mqttclient单例并启动
+    if (!Mqttclient::initialize(HandleMqttMessage)) {
+        ESP_LOGE(TAG, "Failed to initialize MQTT client");
+        return false;
+    }
     
     return true;
 }
 
 Mqttclient* SmarthomeManager::getMqttClient() const {
-    return m_mqttClient;
+    return Mqttclient::getInstance();
 }
 
 bool SmarthomeManager::shutdown() {
     ESP_LOGI(TAG, "Shutting down smarthome manager");
 
-    delete m_mqttClient; 
-    m_mqttClient = nullptr;
-
     std::lock_guard<std::mutex> lock(m_mutex);
     m_gateways.clear();
+
+    // 由Mqttclient的shutdown方法负责清理
+    Mqttclient::shutdown();
 
     return true;
 }
@@ -99,8 +102,8 @@ bool SmarthomeManager::addGateway(const std::string& gatewayId, const GatewayTyp
     ESP_LOGI(TAG, "Gateway added successfully: %s (Type: %s)", 
              gatewayId.c_str(), gatewayType);
     
-    // 开始发现设备
-    gateway->discoverDevices(getMqttClient());
+    // 开始发现设备，使用Mqttclient单例
+    gateway->discoverDevices(Mqttclient::getInstance());
     
     return true;
 }
